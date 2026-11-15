@@ -124,6 +124,13 @@ function pmCmd(sub, pos, opt) {
       d.prepare(`UPDATE decisions SET status='closed' WHERE id=?`).run(did);
       return out({ closed: did });
     }
+    case 'file-status': {
+      const [fid, st] = pos;
+      const allowed = ['approved', 'rejected', 'changes_requested', 'archived', 'pending_review', 'awaiting_pm'];
+      if (!allowed.includes(st)) die('status must be one of ' + allowed.join(', '));
+      const r = d.prepare(`UPDATE files SET status=?, review_comment=COALESCE(?, review_comment), reviewed_at=? WHERE id=?`).run(st, opt.note || null, B.now(), fid);
+      return out({ file: fid, status: st, updated: r.changes === 1 });
+    }
     case 'upload': {
       const files = require('./files');
       const f = files.upload(pos[0] || die('path required'), { title: opt.title, note: opt.note, uploadedBy: 'pm', status: 'awaiting_pm' });

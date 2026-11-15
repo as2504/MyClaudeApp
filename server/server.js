@@ -285,8 +285,13 @@ function serveStatic(req, res, url) {
   });
 }
 
+const ACCESS_LOG = path.join(cfg.LOG_DIR, 'access.log');
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  if (url.pathname.startsWith('/api/')) {
+    // Diagnostics: method, path and status only (no bodies, cookies or keys).
+    res.on('finish', () => fs.appendFile(ACCESS_LOG, `${new Date().toISOString()} ${req.method} ${url.pathname} ${res.statusCode} ${String(req.headers['user-agent'] || '').slice(0, 60)}\n`, () => {}));
+  }
   try {
     if (url.pathname === '/healthz') return send(res, 200, 'ok');
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
