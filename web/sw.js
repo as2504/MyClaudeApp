@@ -1,5 +1,5 @@
 // Service worker: app-shell cache + Web Push with delivery acknowledgement.
-const CACHE = 'lorewood-shell-v1';
+const CACHE = 'lorewood-shell-v2';
 const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

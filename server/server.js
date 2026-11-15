@@ -87,6 +87,9 @@ function state() {
     activity: d.prepare(`SELECT id,ts,sender,recipient,type,substr(content,1,280) content,status,file_id,decision_id FROM messages ORDER BY ts DESC LIMIT 40`).all(),
     pm_runs: d.prepare(`SELECT id,started_at,ended_at,status,summary,cost_usd FROM pm_runs ORDER BY id DESC LIMIT 5`).all(),
     push_subscriptions: d.prepare(`SELECT COUNT(*) n FROM push_subs`).get().n,
+    // Everything that is waiting on the user, for the home page "Needs you" section.
+    todo_decisions: d.prepare(`SELECT id,ts,question,recommendation,importance FROM decisions WHERE asked_of='user' AND status='open' ORDER BY CASE importance WHEN 'high' THEN 0 ELSE 1 END, ts`).all(),
+    todo_files: d.prepare(`SELECT id,ts,title,note,kind FROM files WHERE status='pending_review' ORDER BY ts`).all(),
     server_time: B.now(),
   };
 }
@@ -243,6 +246,29 @@ async function api(req, res, url) {
     return send(res, 200, { ok: true, message: msg.id });
   }
 
+  if (p === '/api/dismiss' && M === 'POST') {
+    // Clear items that are no longer relevant. Records are kept (closed/archived), never deleted.
+    // The PM is informed through a non-actionable note, so no PM run (no tokens) is triggered.
+    const body = await readBody(req);
+    const reason = String(body.reason || 'No longer needed').slice(0, 300);
+    const decIds = (Array.isArray(body.decisions) ? body.decisions : []).map(String).slice(0, 200);
+    const fileIds = (Array.isArray(body.files) ? body.files : []).map(String).slice(0, 200);
+    const closed = [], archived = [];
+    for (const id of decIds) {
+      const r = d.prepare(`UPDATE decisions SET status='closed', comment=?, answered_by='user (dismissed)', answered_at=? WHERE id=? AND asked_of='user' AND status='open'`).run(reason, B.now(), id);
+      if (r.changes) closed.push(id);
+    }
+    for (const id of fileIds) {
+      const r = d.prepare(`UPDATE files SET status='archived', review_comment=COALESCE(review_comment, ?), reviewed_at=? WHERE id=? AND status NOT IN ('archived')`).run('Dismissed: ' + reason, B.now(), id);
+      if (r.changes) archived.push(id);
+    }
+    if (closed.length || archived.length) {
+      B.addMessage({ sender: 'user', recipient: 'pm', type: 'dismissed', status: 'noted',
+        content: `User cleared items as no longer needed (${reason}). Decisions closed: ${closed.join(', ') || 'none'}. Files archived: ${archived.join(', ') || 'none'}.` });
+    }
+    return send(res, 200, { closed, archived });
+  }
+
   if (p === '/api/notifications' && M === 'GET') {
     return send(res, 200, { notifications: d.prepare(`SELECT * FROM notifications ORDER BY ts DESC LIMIT 60`).all() });
   }
@@ -278,7 +304,7 @@ function serveStatic(req, res, url) {
   fs.readFile(abs, (err, data) => {
     if (err) return send(res, 404, 'not found');
     const ext = path.extname(abs).toLowerCase();
-    const h = { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': rel === '/sw.js' || ext === '.html' ? 'no-cache' : 'public, max-age=300' };
+    const h = { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': rel.startsWith('/icons/') ? 'public, max-age=86400' : 'no-cache' };   // always revalidate app code
     if (ext === '.html') h['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'";
     res.writeHead(200, Object.assign(h, SEC_HEADERS));
     res.end(data);

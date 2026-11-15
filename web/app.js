@@ -56,7 +56,7 @@ async function home() {
   const prog = Math.max(0, Math.min(100, parseInt(st('progress') || '0', 10) || 0));
   const ws = st('worker_state') || 'unknown';
   const needs = ws === 'needs_input' ? `<div class="recbox">⚠ ${esc(st('worker_needs_input') || 'The worker is waiting for input on the laptop.')}</div>` : '';
-  view.innerHTML = `
+  view.innerHTML = needsYou() + `
   <section class="card hero">
     <h2>Current project</h2>
     <div class="film">${esc(st('project') || 'No project set')}</div>
@@ -88,6 +88,34 @@ async function home() {
     <p class="tiny muted" style="margin:6px 0 0">Last run ${ago(st('pm_last_run'))} · watchdog ${ago(st('watchdog_last_run'))}</p>
   </section>
   <section class="card"><h2>Recent activity</h2>${feed(S.activity.slice(0, 15))}</section>`;
+}
+
+// Everything waiting on the user, grouped by kind with distinct colours and headings.
+function needsYou() {
+  const decs = S.todo_decisions || [], files = S.todo_files || [];
+  const ws = st('worker_state');
+  const blocks = [];
+  if (ws === 'needs_input') blocks.push(`
+    <div class="todo-group"><div class="todo-head t-alert">⚠ Worker is waiting on the laptop</div>
+      <div class="todo t-alert"><div class="todo-body">${esc(st('worker_needs_input') || 'The worker needs input or a permission approval in the Claude app.')}</div></div></div>`);
+  if (decs.length) blocks.push(`
+    <div class="todo-group"><div class="todo-head t-dec">⚖ Decisions for you <span class="count">${decs.length}</span></div>
+      ${decs.map(d => `<a class="todo t-dec" href="#/decisions">
+        <div class="todo-kind">Decision${d.importance === 'high' ? ' · important' : ''}</div>
+        <div class="todo-title">${esc(d.question)}</div>
+        ${d.recommendation ? `<div class="todo-body"><b>PM recommends:</b> ${esc(d.recommendation)}</div>` : ''}
+        <div class="todo-cta">Decide →</div></a>`).join('')}</div>`);
+  if (files.length) blocks.push(`
+    <div class="todo-group"><div class="todo-head t-rev">▶ Files to review <span class="count">${files.length}</span></div>
+      ${files.map(f => `<a class="todo t-rev" href="#/files/${esc(f.id)}">
+        <div class="todo-kind">${ICON[f.kind] || '◇'} ${esc(label(f.kind))} review</div>
+        <div class="todo-title">${esc(f.title)}</div>
+        ${f.note ? `<div class="todo-body">${esc(f.note.length > 160 ? f.note.slice(0, 160) + '…' : f.note)}</div>` : ''}
+        <div class="todo-cta">Review →</div></a>`).join('')}</div>`);
+  if (S.unread_pm) blocks.push(`
+    <div class="todo-group"><div class="todo-head t-msg">✎ PM replies <span class="count">${S.unread_pm}</span></div>
+      <a class="todo t-msg" href="#/chat"><div class="todo-title">${S.unread_pm} unread message${S.unread_pm > 1 ? 's' : ''} from the PM</div><div class="todo-cta">Read →</div></a></div>`);
+  return `<section class="needs"><h2 class="needs-h">Needs you</h2>${blocks.length ? blocks.join('') : '<div class="todo all-clear">✓ Nothing needs you right now. Production is moving.</div>'}</section>`;
 }
 
 function feed(rows) {
@@ -128,16 +156,51 @@ async function decisions() {
   refreshState().catch(() => {});
   const open = j.decisions.filter(d => d.status === 'open'), done = j.decisions.filter(d => d.status !== 'open');
   view.innerHTML = `
+    ${open.length ? selBar(open.length, 'decision') : ''}
     ${open.length ? open.map(decCard).join('') : '<div class="card empty">No decisions waiting for you. 🎬</div>'}
-    ${done.length ? `<section class="card"><h2>Answered</h2><ul class="feed">${done.map(d => `<li><span class="who user">✓</span><div>
-      <div class="meta">${clock(d.answered_at || d.ts)} · <span class="pill ${esc(d.status)}">${esc(d.status)}</span></div>
-      <div class="txt"><b>${esc(d.question)}</b>\n→ ${esc(d.answer || '')}${d.comment ? '\n“' + esc(d.comment) + '”' : ''}</div></div></li>`).join('')}</ul></section>` : ''}`;
+    ${done.length ? `<details class="card hist"><summary>History · ${done.length}</summary><ul class="feed" style="margin-top:10px">${done.map(d => `<li><span class="who user">${d.answered_by === 'user (dismissed)' ? '×' : '✓'}</span><div>
+      <div class="meta">${clock(d.answered_at || d.ts)} · <span class="pill ${esc(d.status)}">${d.answered_by === 'user (dismissed)' ? 'cleared' : esc(d.status)}</span></div>
+      <div class="txt"><b>${esc(d.question)}</b>${d.answer ? '\n→ ' + esc(d.answer) : ''}${d.comment ? '\n“' + esc(d.comment) + '”' : ''}</div></div></li>`).join('')}</ul></details>` : ''}`;
   for (const f of view.querySelectorAll('form[data-dec]')) f.onsubmit = submitDecision;
+  wireClear(decisions);
+}
+
+// ---------- select & clear (items no longer needed) ----------
+function selBar(n, what) {
+  return `<div class="selbar"><span class="small muted">${n} waiting · tick the ones no longer needed</span>
+    <label class="pick"><input type="checkbox" id="pickall"> All</label></div>
+    <div class="clearbar" id="clearbar"><div class="in"><span id="clearcount"></span>
+      <span><button class="btn" type="button" id="clearcancel">Cancel</button> <button class="btn bad" type="button" id="cleargo">Clear</button></span></div></div>`;
+}
+function pickBox(kind, id) {
+  return `<label class="pick" onclick="event.stopPropagation()"><input type="checkbox" class="pickone" data-kind="${kind}" data-id="${esc(id)}"> Not needed</label>`;
+}
+function wireClear(reload) {
+  const boxes = [...view.querySelectorAll('.pickone')];
+  if (!boxes.length) return;
+  const bar = $('#clearbar'), all = $('#pickall');
+  const upd = () => {
+    const n = boxes.filter(b => b.checked).length;
+    bar.classList.toggle('show', n > 0);
+    $('#clearcount').textContent = `${n} selected`;
+    all.checked = n === boxes.length;
+  };
+  boxes.forEach(b => b.onchange = upd);
+  all.onchange = () => { boxes.forEach(b => b.checked = all.checked); upd(); };
+  $('#clearcancel').onclick = () => { boxes.forEach(b => b.checked = false); upd(); };
+  $('#cleargo').onclick = async () => {
+    const sel = boxes.filter(b => b.checked);
+    if (!confirm(`Clear ${sel.length} item(s) as no longer needed? They move to History and the PM is told. Nothing is deleted.`)) return;
+    const body = { decisions: sel.filter(b => b.dataset.kind === 'dec').map(b => b.dataset.id),
+                   files: sel.filter(b => b.dataset.kind === 'file').map(b => b.dataset.id), reason: 'No longer needed' };
+    try { const r = await api('/api/dismiss', { method: 'POST', body }); toast(`Cleared ${r.closed.length + r.archived.length}`); reload(); }
+    catch (e) { toast(e.message); }
+  };
 }
 function decCard(d) {
   const recIdx = d.options.findIndex(o => d.recommendation && (d.recommendation.startsWith(o) || o.startsWith(d.recommendation)));
   return `<form class="card" data-dec="${esc(d.id)}">
-    <div class="row between"><h2 style="margin:0">${d.importance === 'high' ? 'Important decision' : 'Decision'}</h2><span class="tiny muted">${ago(d.ts)}</span></div>
+    <div class="row between"><h2 style="margin:0">${d.importance === 'high' ? 'Important decision' : 'Decision'} · <span style="text-transform:none;letter-spacing:0">${ago(d.ts)}</span></h2>${pickBox('dec', d.id)}</div>
     <h3 style="margin-top:8px">${esc(d.question)}</h3>
     ${d.context ? `<div class="context">${esc(d.context)}</div>` : ''}
     ${d.recommendation ? `<div class="recbox"><span class="rec-tag">PM recommends</span>${esc(d.recommendation)}</div>` : ''}
@@ -163,12 +226,19 @@ const ICON = { audio: '♪', video: '▶', image: '▣', text: '¶', pdf: '⎙',
 async function files() {
   const j = await api('/api/files');
   refreshState().catch(() => {});
-  view.innerHTML = j.files.length ? `<section class="card">${j.files.map(f => `
-    <a class="file" href="#/files/${esc(f.id)}" style="padding:10px 0;border-top:1px solid var(--line)">
-      <span class="ficon">${ICON[f.kind] || '◇'}</span>
-      <div><div class="row between"><b>${esc(f.title)}</b><span class="pill ${esc(f.status)}">${esc(label(f.status))}</span></div>
-      <div class="tiny muted">${esc(f.original_name)} · ${(f.size / 1e6).toFixed(1)} MB · ${ago(f.ts)}</div></div></a>`).join('')}</section>`
-    : '<div class="card empty">No files have been shared for review yet.</div>';
+  const todo = j.files.filter(f => f.status === 'pending_review'), rest = j.files.filter(f => f.status !== 'pending_review');
+  const row = (f, pick) => `
+    <div class="filerow">
+      <a class="file" href="#/files/${esc(f.id)}">
+        <span class="ficon">${ICON[f.kind] || '◇'}</span>
+        <div><div class="row between"><b>${esc(f.title)}</b>${pick ? '' : `<span class="pill ${esc(f.status)}">${esc(label(f.status === 'awaiting_pm' ? 'with PM' : f.status))}</span>`}</div>
+        <div class="tiny muted">${esc(f.original_name)} · ${(f.size / 1e6).toFixed(1)} MB · ${ago(f.ts)}</div></div></a>
+      ${pick ? pickBox('file', f.id) : ''}</div>`;
+  view.innerHTML = `
+    ${todo.length ? selBar(todo.length, 'file') + `<section class="card"><h2>Needs your review</h2>${todo.map(f => row(f, true)).join('')}</section>`
+      : '<div class="card empty">Nothing waiting for your review. 🎬</div>'}
+    ${rest.length ? `<details class="card hist"><summary>History · ${rest.length}</summary>${rest.map(f => row(f, false)).join('')}</details>` : ''}`;
+  wireClear(files);
 }
 async function fileDetail(id) {
   const f = await api('/api/files/' + encodeURIComponent(id));
