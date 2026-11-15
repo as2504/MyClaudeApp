@@ -1,0 +1,15 @@
+{
+  "name": "lorewood-control-centre",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Production bus, PM trigger, watchdog and phone PWA for Lorewood Films.",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "lw": "node bus/lw.js"
+  },
+  "engines": { "node": ">=22.13" },
+  "dependencies": {
+    "web-push": "3.6.7"
+  }
+}
