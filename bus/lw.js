@@ -32,6 +32,12 @@ function queueNotification({ title, body, url = '/', priority = 'normal', relate
   return id;
 }
 
+function attachFile(p, by) {
+  // Upload a copy for a decision attachment; status 'attachment' keeps it out of the review queue.
+  const f = require('./files').upload(p, { uploadedBy: by, status: 'attachment' });
+  return f.id;
+}
+
 function workerSend(opt, content) {
   const type = opt.type || 'update';
   let file_id = null;
@@ -43,10 +49,11 @@ function workerSend(opt, content) {
   let decision_id = opt.decision || null;
   if ((type === 'question' || type === 'decision_request') && !decision_id) {
     decision_id = B.newId('d');
-    B.db().prepare(`INSERT INTO decisions(id,ts,asked_by,asked_of,question,context,options,recommendation,status,task_id,importance)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    const att = [].concat(opt.attach || []).filter(a => a && a !== true).map(p => attachFile(p, 'worker'));
+    B.db().prepare(`INSERT INTO decisions(id,ts,asked_by,asked_of,question,context,options,recommendation,status,task_id,importance,attachments)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(decision_id, B.now(), 'worker', 'pm', content, opt.context || null, JSON.stringify(splitOpts(opt.options)),
-        opt.recommend || null, 'open', opt.task || null, opt.importance || 'normal');
+        opt.recommend || null, 'open', opt.task || null, opt.importance || 'normal', att.length ? JSON.stringify(att) : null);
   }
   const m = B.addMessage({ sender: 'worker', recipient: 'pm', type, content, task_id: opt.task || null, decision_id, file_id,
     meta: opt.context ? { context: opt.context } : null });
@@ -100,10 +107,12 @@ function pmCmd(sub, pos, opt) {
     case 'ask-user': {
       const q = opt.question || pos.join(' ') || die('--question required');
       const id = B.newId('d');
-      d.prepare(`INSERT INTO decisions(id,ts,asked_by,asked_of,question,context,options,recommendation,status,task_id,importance,source_message_id)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+      // --attach <path> (repeatable): copies the file so the user can SEE what they are deciding on (diffs render inline).
+      const att = [].concat(opt.attach || []).filter(a => a && a !== true).map(p => attachFile(p, 'pm'));
+      d.prepare(`INSERT INTO decisions(id,ts,asked_by,asked_of,question,context,options,recommendation,status,task_id,importance,source_message_id,attachments)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run(id, B.now(), 'pm', 'user', q, opt.context || null, JSON.stringify(splitOpts(opt.options)), opt.recommend || null,
-          'open', opt.task || null, opt.importance || 'normal', opt.from || null);
+          'open', opt.task || null, opt.importance || 'normal', opt.from || null, att.length ? JSON.stringify(att) : null);
       const n = queueNotification({ title: 'Decision needed', body: q, url: '/#/decisions', priority: opt.importance === 'high' ? 'high' : 'normal', related: id });
       B.addMessage({ sender: 'pm', recipient: 'user', type: 'decision_request', content: q, decision_id: id, status: 'pending' });
       return out({ decision_id: id, notification: n });
@@ -118,6 +127,15 @@ function pmCmd(sub, pos, opt) {
         m = B.addMessage({ sender: 'pm', recipient: 'worker', type: 'decision', content: `Decision on "${dec.question.slice(0, 200)}": ${ans}`, decision_id: did });
       }
       return out({ decision_id: did, relayed_to_worker: m ? m.id : null });
+    }
+    case 'attach': {
+      // pm attach <decision-id> <path-or-file-id> ... : add evidence (patch, draft, image) to an existing decision.
+      const [did, ...items] = pos;
+      const dec = d.prepare('SELECT attachments FROM decisions WHERE id=?').get(did) || die('no decision ' + did);
+      const cur = JSON.parse(dec.attachments || '[]');
+      for (const it of items) cur.push(/^f_\w+$/.test(it) ? it : attachFile(it, 'pm'));
+      d.prepare('UPDATE decisions SET attachments=? WHERE id=?').run(JSON.stringify([...new Set(cur)]), did);
+      return out({ decision_id: did, attachments: cur });
     }
     case 'close-decision': {
       const [did] = pos;

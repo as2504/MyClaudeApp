@@ -14,9 +14,11 @@ const MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif',
   '.md': 'text/markdown', '.txt': 'text/plain', '.json': 'application/json', '.srt': 'text/plain', '.vtt': 'text/vtt',
   '.pdf': 'application/pdf', '.html': 'text/plain', '.csv': 'text/csv',
+  '.patch': 'text/x-diff', '.diff': 'text/x-diff', '.py': 'text/plain', '.js': 'text/plain', '.ps1': 'text/plain',
 };
 function kindOf(mime) {
   if (!mime) return 'other';
+  if (mime === 'text/x-diff') return 'diff';
   if (mime.startsWith('audio/')) return 'audio';
   if (mime.startsWith('video/')) return 'video';
   if (mime.startsWith('image/')) return 'image';

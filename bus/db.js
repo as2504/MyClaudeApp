@@ -92,6 +92,9 @@ function migrate(d) {
     started_at TEXT, ended_at TEXT, pid INTEGER, status TEXT, message_ids TEXT, exit_code INTEGER, summary TEXT, cost_usd REAL
   );
   `);
+  // v2: decisions can carry attachments (JSON array of file ids) so the user sees exactly what they approve.
+  const cols = d.prepare(`PRAGMA table_info(decisions)`).all().map(c => c.name);
+  if (!cols.includes('attachments')) d.exec(`ALTER TABLE decisions ADD COLUMN attachments TEXT`);
 }
 
 const now = () => new Date().toISOString();

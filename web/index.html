@@ -3,42 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#141210">
+  <meta name="theme-color" content="#110f0d">
   <meta name="color-scheme" content="dark">
   <title>Lorewood Control</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icons/icon-192.png">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Zilla+Slab:wght@600;700&display=swap">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="top">
-    <div class="brand"><img src="/icons/icon-192.png" alt="" class="logo"><div><div class="wordmark">LOREWOOD</div><div class="sub">Production Control</div></div></div>
-    <div id="conn" class="conn" title="Connection"></div>
+    <a class="brand" href="#/"><img src="/icons/icon-192.png" alt="" class="logo"><span class="wordmark">Lorewood</span></a>
+    <span id="conn" class="conn" title="Connection to the laptop"></span>
   </header>
 
   <main id="view" class="view" aria-live="polite"></main>
 
-  <nav class="tabs" id="tabs">
-    <a href="#/" data-tab="home"><span class="ic">◉</span><span>Home</span></a>
-    <a href="#/chat" data-tab="chat"><span class="ic">✎</span><span>Ask PM</span><i class="badge" id="b-chat"></i></a>
-    <a href="#/decisions" data-tab="decisions"><span class="ic">⚖</span><span>Decisions</span><i class="badge" id="b-dec"></i></a>
-    <a href="#/files" data-tab="files"><span class="ic">▶</span><span>Review</span><i class="badge" id="b-files"></i></a>
-    <a href="#/notifications" data-tab="notifications"><span class="ic">◔</span><span>Alerts</span></a>
-  </nav>
-
-  <template id="login-tpl">
-    <section class="login card">
-      <img src="/icons/icon-512.png" alt="" class="login-logo">
-      <h1>Production Control</h1>
-      <p class="muted">Enter the access key from the laptop (<code>LorewoodPM\data\secrets.json</code>).</p>
-      <form id="login-form">
-        <input id="key" type="password" autocomplete="current-password" placeholder="Access key" required>
-        <button class="btn primary" type="submit">Sign in</button>
-        <p class="err" id="login-err"></p>
-      </form>
-    </section>
-  </template>
+  <nav class="tabs" id="tabs"></nav>
   <script src="/app.js"></script>
 </body>
 </html>

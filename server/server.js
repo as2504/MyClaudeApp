@@ -88,10 +88,26 @@ function state() {
     pm_runs: d.prepare(`SELECT id,started_at,ended_at,status,summary,cost_usd FROM pm_runs ORDER BY id DESC LIMIT 5`).all(),
     push_subscriptions: d.prepare(`SELECT COUNT(*) n FROM push_subs`).get().n,
     // Everything that is waiting on the user, for the home page "Needs you" section.
-    todo_decisions: d.prepare(`SELECT id,ts,question,recommendation,importance FROM decisions WHERE asked_of='user' AND status='open' ORDER BY CASE importance WHEN 'high' THEN 0 ELSE 1 END, ts`).all(),
+    todo_decisions: d.prepare(`SELECT id,ts,question,recommendation,importance,attachments FROM decisions WHERE asked_of='user' AND status='open' ORDER BY CASE importance WHEN 'high' THEN 0 ELSE 1 END, ts`).all(),
     todo_files: d.prepare(`SELECT id,ts,title,note,kind FROM files WHERE status='pending_review' ORDER BY ts`).all(),
     server_time: B.now(),
   };
+}
+
+// A file's metadata for the app; text/diff content is included inline when asked (≤ 400 KB).
+function fileView(id, withText) {
+  const f = B.db().prepare('SELECT * FROM files WHERE id=?').get(id);
+  if (!f) return null;
+  const out = { id: f.id, ts: f.ts, title: f.title, note: f.note, kind: f.kind, mime: f.mime, size: f.size, status: f.status,
+    review_comment: f.review_comment, reviewed_at: f.reviewed_at, has_preview: !!f.preview_name, original_name: path.basename(f.original_path),
+    original_path: f.original_path.replace(/^.*?\\Cinema\\/i, 'Cinema\\') };
+  if (withText && (f.kind === 'text' || f.kind === 'diff')) {
+    const abs = safeJoin(cfg.FILES_DIR, f.stored_name);
+    const buf = Buffer.alloc(Math.min(f.size, 400 * 1024));
+    const fd = fs.openSync(abs, 'r'); fs.readSync(fd, buf, 0, buf.length, 0); fs.closeSync(fd);
+    out.text = buf.toString('utf8'); out.truncated = f.size > buf.length;
+  }
+  return out;
 }
 
 // ---------- push ----------
@@ -188,7 +204,10 @@ async function api(req, res, url) {
 
   if (p === '/api/decisions' && M === 'GET') {
     const rows = d.prepare(`SELECT * FROM decisions WHERE asked_of='user' ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, ts DESC LIMIT 50`).all();
-    return send(res, 200, { decisions: rows.map(r => Object.assign(r, { options: JSON.parse(r.options || '[]') })) });
+    return send(res, 200, { decisions: rows.map(r => Object.assign(r, {
+      options: JSON.parse(r.options || '[]'),
+      attachments: JSON.parse(r.attachments || '[]').map(id => fileView(id, r.status === 'open')).filter(Boolean),
+    })) });
   }
   let m;
   if ((m = /^\/api\/decisions\/([\w-]+)$/.exec(p)) && M === 'POST') {
@@ -207,22 +226,13 @@ async function api(req, res, url) {
   }
 
   if (p === '/api/files' && M === 'GET') {
-    const rows = d.prepare(`SELECT id,ts,title,note,kind,mime,size,status,review_comment,reviewed_at,preview_name IS NOT NULL has_preview, original_path FROM files WHERE status!='archived' ORDER BY CASE status WHEN 'pending_review' THEN 0 ELSE 1 END, ts DESC LIMIT 100`).all();
+    const rows = d.prepare(`SELECT id,ts,title,note,kind,mime,size,status,review_comment,reviewed_at,preview_name IS NOT NULL has_preview, original_path FROM files WHERE status NOT IN ('archived','attachment') ORDER BY CASE status WHEN 'pending_review' THEN 0 ELSE 1 END, ts DESC LIMIT 100`).all();
     for (const r of rows) r.original_name = path.basename(r.original_path), delete r.original_path;
     return send(res, 200, { files: rows });
   }
   if ((m = /^\/api\/files\/([\w-]+)$/.exec(p)) && M === 'GET') {
-    const f = d.prepare('SELECT * FROM files WHERE id=?').get(m[1]);
-    if (!f) return send(res, 404, { error: 'not found' });
-    const out = { id: f.id, ts: f.ts, title: f.title, note: f.note, kind: f.kind, mime: f.mime, size: f.size, status: f.status,
-      review_comment: f.review_comment, reviewed_at: f.reviewed_at, has_preview: !!f.preview_name, original_name: path.basename(f.original_path) };
-    if (f.kind === 'text') {
-      const abs = safeJoin(cfg.FILES_DIR, f.stored_name);
-      const buf = Buffer.alloc(Math.min(f.size, 400 * 1024));
-      const fd = fs.openSync(abs, 'r'); fs.readSync(fd, buf, 0, buf.length, 0); fs.closeSync(fd);
-      out.text = buf.toString('utf8'); out.truncated = f.size > buf.length;
-    }
-    return send(res, 200, out);
+    const out = fileView(m[1], true);
+    return out ? send(res, 200, out) : send(res, 404, { error: 'not found' });
   }
   if ((m = /^\/api\/files\/([\w-]+)\/raw$/.exec(p)) && M === 'GET') {
     const f = d.prepare('SELECT * FROM files WHERE id=?').get(m[1]);
