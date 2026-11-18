@@ -95,6 +95,11 @@ function migrate(d) {
   // v2: decisions can carry attachments (JSON array of file ids) so the user sees exactly what they approve.
   const cols = d.prepare(`PRAGMA table_info(decisions)`).all().map(c => c.name);
   if (!cols.includes('attachments')) d.exec(`ALTER TABLE decisions ADD COLUMN attachments TEXT`);
+  // v3: items belong to a project, so they retire automatically when the project moves on.
+  if (!cols.includes('project')) d.exec(`ALTER TABLE decisions ADD COLUMN project TEXT`);
+  if (!cols.includes('source')) d.exec(`ALTER TABLE decisions ADD COLUMN source TEXT`);   // 'bus' | 'direct' (asked in the worker session)
+  const fcols = d.prepare(`PRAGMA table_info(files)`).all().map(c => c.name);
+  if (!fcols.includes('project')) d.exec(`ALTER TABLE files ADD COLUMN project TEXT`);
 }
 
 const now = () => new Date().toISOString();
@@ -153,7 +158,7 @@ function claimWorkerMessages() {
 
 function formatForWorker(rows) {
   const lines = rows.map(r => {
-    let s = `[Lorewood PM → worker | ${r.id} | ${r.type}${r.decision_id ? ' | decision ' + r.decision_id : ''}${r.task_id ? ' | task ' + r.task_id : ''}]\n${r.content}`;
+    let s = `[${r.sender === 'user' ? 'The USER (from their phone)' : 'Lorewood PM'} → worker | ${r.id} | ${r.type}${r.decision_id ? ' | decision ' + r.decision_id : ''}${r.task_id ? ' | task ' + r.task_id : ''}]\n${r.content}`;
     return s;
   });
   return `Message(s) from the Lorewood Production Manager via the production bus:\n\n${lines.join('\n\n')}\n\n` +
@@ -161,4 +166,30 @@ function formatForWorker(rows) {
     `If you are mid-operation, finish the current step safely first; these messages do not require interrupting a running process.`;
 }
 
-module.exports = { db, now, newId, logEvent, setStatus, getStatus, allStatus, addMessage, claimWorkerMessages, formatForWorker };
+const currentProject = () => getStatus('project');
+
+// Move to a new project: everything still open for the user from earlier projects is retired
+// (closed/archived, never deleted) so the phone only shows what matters now.
+function switchProject(name, { stage, phase } = {}) {
+  const d = db();
+  const old = getStatus('project');
+  if (name && name !== old) {
+    const why = `Project moved on: ${old || '(none)'} → ${name}`;
+    const dec = d.prepare(`UPDATE decisions SET status='closed', comment=COALESCE(comment, ?), answered_by='system (project changed)', answered_at=?
+      WHERE status IN ('open','answered') AND (project IS NULL OR project != ?)`).run(why, now(), name).changes;
+    const fil = d.prepare(`UPDATE files SET status='archived', review_comment=COALESCE(review_comment, ?), reviewed_at=?
+      WHERE status IN ('pending_review','awaiting_pm') AND (project IS NULL OR project != ?)`).run(why, now(), name).changes;
+    setStatus('project', name);
+    setStatus('project_started', now());
+    for (const k of ['current_task', 'last_completed', 'worker_next', 'last_error', 'pm_last_summary', 'worker_needs_input']) setStatus(k, null);
+    setStatus('progress', 0);
+    logEvent('bus', 'project_switched', { from: old, to: name, decisions_closed: dec, files_archived: fil });
+    addMessage({ sender: 'system', recipient: 'pm', type: 'project_switched', status: 'noted',
+      content: `${why}. Retired ${dec} open decision(s) and ${fil} review file(s) from earlier projects.` });
+  }
+  if (stage != null) setStatus('stage', stage);
+  if (phase != null) setStatus('phase', phase);
+  return { project: name, previous: old };
+}
+
+module.exports = { db, now, newId, logEvent, setStatus, getStatus, allStatus, addMessage, claimWorkerMessages, formatForWorker, currentProject, switchProject };

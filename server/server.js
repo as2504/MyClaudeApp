@@ -84,11 +84,13 @@ function state() {
     unread_pm: d.prepare(`SELECT COUNT(*) n FROM messages WHERE sender='pm' AND recipient='user' AND status IN ('pending','delivered')`).get().n,
     pm_waiting: d.prepare(`SELECT COUNT(*) n FROM messages WHERE recipient='pm' AND status IN ('pending','processing')`).get().n,
     worker_unacked: d.prepare(`SELECT COUNT(*) n FROM messages WHERE recipient='worker' AND status IN ('pending','delivered')`).get().n,
-    activity: d.prepare(`SELECT id,ts,sender,recipient,type,substr(content,1,280) content,status,file_id,decision_id FROM messages ORDER BY ts DESC LIMIT 40`).all(),
+    // Activity of the CURRENT project only (older projects live in History, not on the home page).
+    activity: d.prepare(`SELECT id,ts,sender,recipient,type,substr(content,1,280) content,status,file_id,decision_id FROM messages
+      WHERE ts >= ? AND type NOT IN ('session_start','session_end','dismissed','project_switched') ORDER BY ts DESC LIMIT 40`).all(B.getStatus('project_started') || ''),
     pm_runs: d.prepare(`SELECT id,started_at,ended_at,status,summary,cost_usd FROM pm_runs ORDER BY id DESC LIMIT 5`).all(),
     push_subscriptions: d.prepare(`SELECT COUNT(*) n FROM push_subs`).get().n,
     // Everything that is waiting on the user, for the home page "Needs you" section.
-    todo_decisions: d.prepare(`SELECT id,ts,question,recommendation,importance,attachments FROM decisions WHERE asked_of='user' AND status='open' ORDER BY CASE importance WHEN 'high' THEN 0 ELSE 1 END, ts`).all(),
+    todo_decisions: d.prepare(`SELECT id,ts,question,recommendation,importance,attachments,source FROM decisions WHERE asked_of='user' AND status='open' ORDER BY CASE WHEN source='direct' THEN 0 WHEN importance='high' THEN 1 ELSE 2 END, ts`).all(),
     todo_files: d.prepare(`SELECT id,ts,title,note,kind FROM files WHERE status='pending_review' ORDER BY ts`).all(),
     server_time: B.now(),
   };
@@ -217,6 +219,16 @@ async function api(req, res, url) {
     const body = await readBody(req);
     const choice = String(body.choice || '').slice(0, 500), comment = String(body.comment || '').slice(0, 4000);
     if (!choice && !comment) return send(res, 400, { error: 'choose an option or write a comment' });
+    const answer = `${choice || ''}${choice && comment ? '. ' : ''}${comment || ''}`;
+    if (dec.source === 'direct') {
+      // The worker asked this in its own session: answer goes straight to the worker (no PM run needed).
+      d.prepare(`UPDATE decisions SET status='closed', answer=?, comment=?, answered_by='user (phone)', answered_at=? WHERE id=? AND status='open'`)
+        .run(choice || null, comment || null, B.now(), dec.id);
+      const msg = B.addMessage({ sender: 'user', recipient: 'worker', type: 'user_answer', decision_id: dec.id,
+        content: `The USER answered your question from their phone (they are away from the laptop).\nYour question: "${dec.question}"\nTheir answer: ${answer}\nTreat this exactly as if they had typed it in this session, then continue.` });
+      B.addMessage({ sender: 'user', recipient: 'pm', type: 'user_decision', status: 'noted', decision_id: dec.id, content: `User answered the worker from the phone: "${dec.question.slice(0, 160)}" → ${answer}` });
+      return send(res, 200, { ok: true, message: msg.id, relayed: 'worker' });
+    }
     d.prepare(`UPDATE decisions SET status='answered', answer=?, comment=?, answered_by='user', answered_at=? WHERE id=? AND status='open'`)
       .run(choice || null, comment || null, B.now(), dec.id);
     const msg = B.addMessage({ sender: 'user', recipient: 'pm', type: 'decision_response', decision_id: dec.id,

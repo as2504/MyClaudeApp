@@ -171,7 +171,7 @@ function ring(pct) {
 }
 function workerState() {
   const ws = st('worker_state') || 'unknown';
-  const map = { working: ['Working', 'st-working'], idle: ['Idle', 'st-idle'], idle_background_running: ['Rendering', 'st-working'], waiting_for_decision: ['Waiting on a decision', 'st-wait'],
+  const map = { working: ['Working', 'st-working'], idle: ['Idle', 'st-idle'], idle_background_running: ['Rendering', 'st-working'], waiting_for_decision: ['Waiting on a decision', 'st-wait'], waiting_for_user: ['Waiting for your answer', 'st-bad'],
     needs_input: ['Needs you on laptop', 'st-bad'], error: ['Error', 'st-bad'], ended: ['Session ended', 'st-off'], app_closed: ['App closed', 'st-off'] };
   return map[ws] || [label(ws), 'st-off'];
 }
@@ -216,7 +216,7 @@ function needsYou() {
   for (const d of S.todo_decisions) {
     const att = JSON.parse(d.attachments || '[]').length;
     t.push(`<a class="tile k-dec" href="#/decisions/${esc(d.id)}"><span class="ico">${I('scale', 'lg')}</span>
-      <div><div class="t clamp2">${esc(shortQ(d.question))}</div><div class="m"><span class="tag amber">Decision</span>${d.importance === 'high' ? '<span class="tag red">Important</span>' : ''}${att ? `<span>${I('diff', 'sm')} ${att} attachment${att > 1 ? 's' : ''}</span>` : ''}<span>${ago(d.ts)}</span></div></div>
+      <div><div class="t clamp2">${esc(shortQ(d.question))}</div><div class="m">${d.source === 'direct' ? '<span class="tag red">Worker is waiting</span>' : '<span class="tag amber">Decision</span>'}${d.importance === 'high' ? '<span class="tag red">Important</span>' : ''}${att ? `<span>${I('diff', 'sm')} ${att} attachment${att > 1 ? 's' : ''}</span>` : ''}<span>${ago(d.ts)}</span></div></div>
       <span class="chev">${I('chev')}</span></a>`);
   }
   for (const f of S.todo_files) t.push(`<a class="tile k-rev" href="#/files/${esc(f.id)}"><span class="ico">${I(KIND_ICON[f.kind] || 'file', 'lg')}</span>
@@ -276,10 +276,25 @@ async function decisions(focusId) {
       <span class="tag ${d.answered_by === 'user (dismissed)' ? 'grey' : 'green'}">${d.answered_by === 'user (dismissed)' ? 'Cleared' : 'Decided'}</span>
       <div style="min-width:0"><div class="clamp2">${esc(shortQ(d.question))}</div>${d.answer ? `<div class="small muted clamp1">→ ${esc(d.answer)}</div>` : ''}</div></div>`).join('')}</details>` : ''}`;
   for (const f of view.querySelectorAll('form[data-dec]')) f.onsubmit = submitDecision;
+  for (const b of view.querySelectorAll('[data-fill]')) b.onclick = () => { const ta = b.closest('form').querySelector('textarea'); ta.value = b.dataset.fill; ta.focus(); };
   wireClear(() => decisions());
   if (focusId) { const el = view.querySelector(`[data-dec="${CSS.escape(focusId)}"]`); if (el) el.scrollIntoView({ block: 'start' }); }
 }
+// A question the worker asked inside its own session: show what it said, answer it from here.
+function directCard(d) {
+  return `<form class="card dec" data-dec="${esc(d.id)}" style="border-color:var(--red-line);background:linear-gradient(180deg,#2a1611 0%,var(--s1) 120px)">
+    <div class="dec-top"><span class="row" style="gap:6px"><span class="tag red">${I('wrench', 'sm')} Worker is waiting</span><span class="small muted">${ago(d.ts)}</span></span>${pickBox('dec', d.id)}</div>
+    <div class="q">${esc(d.question)}</div>
+    <details class="att" open><summary class="att-h" style="list-style:none;cursor:pointer">${I('chat')}<span class="t">What the worker said</span>${I('chev', 'sm')}</summary>
+      <div class="doc">${md(d.context || '')}</div></details>
+    <div class="suggest mt">${['Yes, go ahead', 'No, hold off', 'Use your recommendation'].map(s => `<button type="button" data-fill="${esc(s)}">${esc(s)}</button>`).join('')}</div>
+    <textarea name="comment" rows="3" class="mt" placeholder="Your answer to the worker"></textarea>
+    <button class="btn primary full mt" type="submit">${I('send', 'sm')} Send to worker</button>
+  </form>`;
+}
+
 function decCard(d) {
+  if (d.source === 'direct') return directCard(d);
   const rec = d.recommendation || '';
   const recIdx = d.options.findIndex(o => rec && (rec.toLowerCase().startsWith(o.toLowerCase().slice(0, 18)) || rec.trim().startsWith(o.split(/[:—-]/)[0].trim()) || rec.startsWith(o.charAt(0) + ' ') || rec.startsWith(o.charAt(0) + ' —')));
   const hasDiff = d.attachments.some(a => a.kind === 'diff');

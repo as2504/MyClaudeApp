@@ -78,9 +78,10 @@ function upload(originalPath, { title, note, uploadedBy = 'worker', taskId = nul
   if (hSrc !== hDst) { throw new Error('Copy verification failed (hash mismatch) for ' + src); }
   const mime = MIME[path.extname(base).toLowerCase()] || 'application/octet-stream';
   const kind = kindOf(mime);
-  db().prepare(`INSERT INTO files(id,ts,original_path,stored_name,mime,kind,size,sha256,title,note,status,uploaded_by,task_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, now(), src, path.relative(cfg.FILES_DIR, dest), mime, kind, st.size, hSrc, title || base, note || null, status, uploadedBy, taskId);
+  db().prepare(`INSERT INTO files(id,ts,original_path,stored_name,mime,kind,size,sha256,title,note,status,uploaded_by,task_id,project)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, now(), src, path.relative(cfg.FILES_DIR, dest), mime, kind, st.size, hSrc, title || base, note || null, status, uploadedBy, taskId,
+      require('./db').currentProject());
   const preview = makePreview(id, dest, kind, st.size);
   if (preview) db().prepare('UPDATE files SET preview_name=? WHERE id=?').run(preview, id);
   logEvent('files', 'uploaded', { id, src, size: st.size, preview: !!preview });

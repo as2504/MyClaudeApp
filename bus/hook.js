@@ -17,19 +17,60 @@ if (event === 'post-tool' && !fs.existsSync(cfg.WORKER_INBOX_FLAG)) process.exit
 
 const B = require('./db');
 
+// The worker is ONE session, but its conversation id changes when the desktop session is cleared,
+// compacted into a new conversation, or restarted. Follow it: a new conversation in the production
+// folder becomes the worker when the user is driving it (session start / prompt) or when the
+// previous worker has gone quiet. Never the excluded builder session.
 function isWorker() {
   if (!sid) return false;
   const c = cfg.load();
   if ((c.excludeSessionIds || []).includes(sid)) return false;
   if (c.workerSessionId === sid) return true;
-  const workerState = B.getStatus('worker_state');
-  if (!c.workerSessionId || (event === 'session-start' && workerState === 'ended')) {
+  const lastSeen = Date.parse(B.getStatus('worker_last_seen') || 0) || 0;
+  const quiet = Date.now() - lastSeen > 10 * 60000;
+  const driven = event === 'session-start' || event === 'user-prompt';
+  if (!c.workerSessionId || driven || quiet || B.getStatus('worker_state') === 'ended') {
     cfg.save({ workerSessionId: sid });
-    B.logEvent('hook', 'worker_adopted', { sid, previous: c.workerSessionId || null });
+    B.logEvent('hook', 'worker_adopted', { sid, previous: c.workerSessionId || null, via: event });
     B.setStatus('worker_session', sid);
     return true;
   }
   return false;
+}
+
+// Teach the protocol once to every new worker conversation (SessionStart may not fire for it).
+function protocolOnce() {
+  const key = 'protocol_sent_' + sid;
+  if (B.getStatus(key)) return '';
+  B.setStatus(key, B.now());
+  return PROTOCOL + '\n\n';
+}
+
+// A turn that ends by asking the user something, inside the worker session, must reach the phone.
+function looksLikeQuestion(msg) {
+  const tail = String(msg || '').trim().slice(-500);
+  if (!tail) return false;
+  if (/\?\s*[*_)"'`]*\s*$/.test(tail)) return true;
+  return /\b(should I|shall I|do you want|would you like|want me to|which (one|option|do you)|let me know|your (call|approval|ok|go-ahead|decision)|approve|confirm (?:that|whether|if)|waiting (for|on) (you|your))\b/i.test(tail);
+}
+function directAsk(msg) {
+  const d = B.db();
+  const text = String(msg).trim();
+  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const qLine = [...lines].reverse().find(l => /\?/.test(l)) || lines[lines.length - 1] || 'The worker is waiting for your reply';
+  const question = qLine.replace(/^[#>*\-\s]+/, '').replace(/\*\*/g, '').slice(0, 200);
+  const context = text.length > 2500 ? '…' + text.slice(-2500) : text;
+  const prev = d.prepare(`SELECT id, context FROM decisions WHERE source='direct' AND status='open' ORDER BY ts DESC LIMIT 1`).get();
+  if (prev && prev.context === context) return;                  // same question already on the phone
+  d.prepare(`UPDATE decisions SET status='closed', comment='Superseded by a newer worker question', answered_by='system', answered_at=? WHERE source='direct' AND status='open'`).run(B.now());
+  const id = B.newId('d');
+  d.prepare(`INSERT INTO decisions(id,ts,asked_by,asked_of,question,context,options,status,importance,project,source)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(id, B.now(), 'worker', 'user', question, context, '[]', 'open', 'normal', B.currentProject(), 'direct');
+  const nid = B.newId('n');
+  d.prepare(`INSERT INTO notifications(id,ts,title,body,url,priority,status,related_id) VALUES (?,?,?,?,?,?,?,?)`)
+    .run(nid, B.now(), 'Worker is waiting for your answer', question.slice(0, 300), '/#/decisions/' + id, 'high', 'queued', id);
+  B.setStatus('worker_state', 'waiting_for_user');
+  B.logEvent('hook', 'direct_ask', { id });
 }
 
 function emit(obj) { process.stdout.write(JSON.stringify(obj)); }
@@ -49,10 +90,11 @@ At natural task boundaries (not in the middle of a running operation) report wit
 PM messages arrive automatically as context at safe checkpoints. Routine progress pings are not needed.`;
 
 function deliverAsContext(hookEventName) {
+  const intro = protocolOnce();
   const rows = B.claimWorkerMessages();
-  if (!rows.length) return false;
-  B.logEvent('hook', 'delivered', { via: hookEventName, ids: rows.map(r => r.id) });
-  emit({ hookSpecificOutput: { hookEventName, additionalContext: B.formatForWorker(rows) } });
+  if (!rows.length && !intro) return false;
+  if (rows.length) B.logEvent('hook', 'delivered', { via: hookEventName, ids: rows.map(r => r.id) });
+  emit({ hookSpecificOutput: { hookEventName, additionalContext: intro + (rows.length ? B.formatForWorker(rows) : '') } });
   return true;
 }
 
@@ -76,6 +118,7 @@ function main() {
       B.logEvent('worker', 'session_start', { source: input.source });
       B.addMessage({ sender: 'system', recipient: 'pm', type: 'session_start', content: `Worker session started (${input.source || 'startup'}).`, status: 'noted' });
       const rows = B.claimWorkerMessages();
+      B.setStatus('protocol_sent_' + sid, B.now());
       emit({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: PROTOCOL + (rows.length ? '\n\n' + B.formatForWorker(rows) : '') } });
       return;
     }
@@ -84,6 +127,8 @@ function main() {
       B.setStatus('worker_state', 'working');
       B.setStatus('worker_last_seen', B.now());
       B.setStatus('user_last_direct', B.now());
+      // The user is answering on the laptop: questions waiting on the phone are no longer needed.
+      B.db().prepare(`UPDATE decisions SET status='closed', comment='Answered directly in the worker session', answered_by='user (laptop)', answered_at=? WHERE source='direct' AND status='open'`).run(B.now());
       deliverAsContext('UserPromptSubmit');
       return;
     }
@@ -100,12 +145,16 @@ function main() {
       B.setStatus('worker_state', bg ? 'idle_background_running' : 'idle');
       B.setStatus('worker_background_tasks', bg);
       if (input.last_assistant_message) B.setStatus('worker_last_reply', String(input.last_assistant_message).slice(0, 600));
+      // Only real PM messages may block a stop (the protocol intro waits for the next prompt, so a
+      // question the worker is ending on is never pushed aside).
       const rows = B.claimWorkerMessages();
       if (rows.length) {
         B.logEvent('hook', 'delivered', { via: 'Stop', ids: rows.map(r => r.id) });
         B.setStatus('worker_state', 'working');
-        emit({ decision: 'block', reason: B.formatForWorker(rows) });
+        emit({ decision: 'block', reason: protocolOnce() + B.formatForWorker(rows) });
+        return;
       }
+      if (!input.stop_hook_active && looksLikeQuestion(input.last_assistant_message)) directAsk(input.last_assistant_message);
       return;
     }
     case 'listen': {
@@ -128,7 +177,7 @@ function main() {
           if (rows.length) {
             B.logEvent('hook', 'delivered', { via: 'asyncRewake', ids: rows.map(r => r.id) });
             B.setStatus('worker_state', 'working');
-            process.stderr.write(B.formatForWorker(rows));
+            process.stderr.write(protocolOnce() + B.formatForWorker(rows));
             process.exit(2);
           }
         }

@@ -50,10 +50,10 @@ function workerSend(opt, content) {
   if ((type === 'question' || type === 'decision_request') && !decision_id) {
     decision_id = B.newId('d');
     const att = [].concat(opt.attach || []).filter(a => a && a !== true).map(p => attachFile(p, 'worker'));
-    B.db().prepare(`INSERT INTO decisions(id,ts,asked_by,asked_of,question,context,options,recommendation,status,task_id,importance,attachments)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+    B.db().prepare(`INSERT INTO decisions(id,ts,asked_by,asked_of,question,context,options,recommendation,status,task_id,importance,attachments,project,source)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(decision_id, B.now(), 'worker', 'pm', content, opt.context || null, JSON.stringify(splitOpts(opt.options)),
-        opt.recommend || null, 'open', opt.task || null, opt.importance || 'normal', att.length ? JSON.stringify(att) : null);
+        opt.recommend || null, 'open', opt.task || null, opt.importance || 'normal', att.length ? JSON.stringify(att) : null, B.currentProject(), 'bus');
   }
   const m = B.addMessage({ sender: 'worker', recipient: 'pm', type, content, task_id: opt.task || null, decision_id, file_id,
     meta: opt.context ? { context: opt.context } : null });
@@ -109,10 +109,10 @@ function pmCmd(sub, pos, opt) {
       const id = B.newId('d');
       // --attach <path> (repeatable): copies the file so the user can SEE what they are deciding on (diffs render inline).
       const att = [].concat(opt.attach || []).filter(a => a && a !== true).map(p => attachFile(p, 'pm'));
-      d.prepare(`INSERT INTO decisions(id,ts,asked_by,asked_of,question,context,options,recommendation,status,task_id,importance,source_message_id,attachments)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      d.prepare(`INSERT INTO decisions(id,ts,asked_by,asked_of,question,context,options,recommendation,status,task_id,importance,source_message_id,attachments,project,source)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run(id, B.now(), 'pm', 'user', q, opt.context || null, JSON.stringify(splitOpts(opt.options)), opt.recommend || null,
-          'open', opt.task || null, opt.importance || 'normal', opt.from || null, att.length ? JSON.stringify(att) : null);
+          'open', opt.task || null, opt.importance || 'normal', opt.from || null, att.length ? JSON.stringify(att) : null, B.currentProject(), 'bus');
       const n = queueNotification({ title: 'Decision needed', body: q, url: '/#/decisions', priority: opt.importance === 'high' ? 'high' : 'normal', related: id });
       B.addMessage({ sender: 'pm', recipient: 'user', type: 'decision_request', content: q, decision_id: id, status: 'pending' });
       return out({ decision_id: id, notification: n });
@@ -162,8 +162,22 @@ function pmCmd(sub, pos, opt) {
       return out({ file: fid, notification: n });
     }
     case 'set': {
-      for (const kv of pos) { const i = kv.indexOf('='); if (i > 0) B.setStatus(kv.slice(0, i), kv.slice(i + 1)); }
+      for (const kv of pos) {
+        const i = kv.indexOf('='); if (i <= 0) continue;
+        const k = kv.slice(0, i), v = kv.slice(i + 1);
+        if (k === 'project') B.switchProject(v); else B.setStatus(k, v);   // a new project retires the old one's items
+      }
       return out(B.allStatus());
+    }
+    case 'new-project': {
+      // pm new-project "<name>" [--stage "..."] [--phase 0-6] [--art <path>]
+      const name = pos.join(' ') || die('project name required');
+      const r = B.switchProject(name, { stage: opt.stage, phase: opt.phase });
+      if (opt.art && opt.art !== true) {
+        const f = require('./files').upload(opt.art, { uploadedBy: 'pm', status: 'attachment' });
+        B.setStatus('project_art', f.id);
+      }
+      return out(r);
     }
     case 'done': {
       const ids = opt['all-processing']
