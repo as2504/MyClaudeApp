@@ -165,7 +165,9 @@ function pmCmd(sub, pos, opt) {
       for (const kv of pos) {
         const i = kv.indexOf('='); if (i <= 0) continue;
         const k = kv.slice(0, i), v = kv.slice(i + 1);
-        if (k === 'project') B.switchProject(v); else B.setStatus(k, v);   // a new project retires the old one's items
+        // Setting `project` only RENAMES the current project (its items keep their status).
+        // Starting a different film is an explicit `pm new-project`, the only thing that retires items.
+        if (k === 'project') B.renameProject(v); else B.setStatus(k, v);
       }
       return out(B.allStatus());
     }

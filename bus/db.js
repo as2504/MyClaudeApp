@@ -173,6 +173,10 @@ const currentProject = () => getStatus('project');
 function switchProject(name, { stage, phase } = {}) {
   const d = db();
   const old = getStatus('project');
+  // Same film under a slightly different name (e.g. "Obsession (2025)" vs "Obsession (2025): the story…")
+  // is a rename, never a switch.
+  const key = (s) => String(s || '').toLowerCase().split(/[:(]/)[0].replace(/[^a-z0-9]/g, '');
+  if (name && old && key(name) === key(old)) return renameProject(name);
   if (name && name !== old) {
     const why = `Project moved on: ${old || '(none)'} → ${name}`;
     const dec = d.prepare(`UPDATE decisions SET status='closed', comment=COALESCE(comment, ?), answered_by='system (project changed)', answered_at=?
@@ -192,4 +196,15 @@ function switchProject(name, { stage, phase } = {}) {
   return { project: name, previous: old };
 }
 
-module.exports = { db, now, newId, logEvent, setStatus, getStatus, allStatus, addMessage, claimWorkerMessages, formatForWorker, currentProject, switchProject };
+function renameProject(name) {
+  const old = getStatus('project');
+  if (!name || name === old) return { project: old };
+  const d = db();
+  d.prepare(`UPDATE decisions SET project=? WHERE project=?`).run(name, old);
+  d.prepare(`UPDATE files SET project=? WHERE project=?`).run(name, old);
+  setStatus('project', name);
+  logEvent('bus', 'project_renamed', { from: old, to: name });
+  return { project: name, renamed_from: old };
+}
+
+module.exports = { db, now, newId, logEvent, setStatus, getStatus, allStatus, addMessage, claimWorkerMessages, formatForWorker, currentProject, switchProject, renameProject };
