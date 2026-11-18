@@ -238,30 +238,50 @@ function evRow(r) {
 }
 
 // ---------- ASK PM ----------
+// The composer is built ONCE; refreshes only redraw the message list, so typing is never erased.
 let chatTimer = null;
+const DRAFT_KEY = 'lw_chat_draft';
+const getDraft = () => { try { return localStorage.getItem(DRAFT_KEY) || ''; } catch (_) { return ''; } };
+const setDraft = (v) => { try { v ? localStorage.setItem(DRAFT_KEY, v) : localStorage.removeItem(DRAFT_KEY); } catch (_) {} };
 async function chat() {
+  view.innerHTML = `<h1 class="page-h">Ask the PM</h1><p class="page-sub">Status, priorities, changes — the PM answers here and can instruct the worker.</p>
+  <div class="chat" id="chatlog"><div class="skeleton" style="height:80px"></div></div>
+  <div class="composer"><form id="cf"><textarea id="ct" rows="1" placeholder="Message the PM" maxlength="4000"></textarea><button class="send" id="cs" type="submit" aria-label="Send">${I('send')}</button></form></div>`;
+  const ta = $('#ct');
+  ta.value = getDraft();
+  const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(120, ta.scrollHeight) + 'px'; };
+  ta.oninput = () => { setDraft(ta.value); grow(); };
+  grow();
+  $('#cf').onsubmit = async (e) => {
+    e.preventDefault(); const t = ta.value.trim(); if (!t) return;
+    $('#cs').disabled = true;
+    try {
+      await api('/api/chat', { method: 'POST', body: { text: t } });
+      ta.value = ''; setDraft(''); grow(); toast('Sent to the PM');
+      await chatLog(true);
+    } catch (err) { toast('Not sent: ' + err.message); }   // text stays in the box
+    finally { $('#cs').disabled = false; }
+  };
+  await chatLog(true);
+}
+async function chatLog(scroll) {
+  if (route !== 'chat') return;
   const j = await api('/api/chat');
   refreshState().catch(() => {});
-  const waiting = j.messages.length && j.messages[j.messages.length - 1].sender === 'user';
-  view.innerHTML = `<h1 class="page-h">Ask the PM</h1><p class="page-sub">Status, priorities, changes — the PM answers here and can instruct the worker.</p>
-  <div class="chat">
+  const log = $('#chatlog'); if (!log) return;
+  const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
+  log.innerHTML = `
+    ${j.messages.length ? '' : `<div class="empty" style="padding:20px 10px">${I('chat')}<div>Ask anything about production. The PM usually replies within a minute or two.</div></div>`}
     ${j.messages.map(m => m.sender === 'user'
       ? `<div class="msg me"><div class="bubble">${esc(m.content)}<span class="t">${clock(m.ts)}</span></div></div>`
       : `<div class="msg pm"><span class="avatar av-pm">${I('spark', 'sm')}</span><div class="bubble">${esc(m.content)}<span class="t">${clock(m.ts)}</span></div></div>`).join('')}
-    ${waiting || j.pm_state === 'thinking' ? `<div class="msg pm"><span class="avatar av-pm">${I('spark', 'sm')}</span><div class="bubble typing"><i></i><i></i><i></i></div></div>` : ''}
-    ${!j.messages.length || !waiting ? `<div class="suggest">${['Where are we on Rocky?', 'What is blocked?', 'What happens next?'].map(s => `<button type="button" data-s="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}
-  </div>
-  <div class="composer"><form id="cf"><textarea id="ct" rows="1" placeholder="Message the PM" maxlength="4000"></textarea><button class="send" type="submit" aria-label="Send">${I('send')}</button></form></div>`;
-  window.scrollTo(0, document.body.scrollHeight);
-  const ta = $('#ct');
-  ta.oninput = () => { ta.style.height = 'auto'; ta.style.height = Math.min(120, ta.scrollHeight) + 'px'; };
-  for (const b of view.querySelectorAll('[data-s]')) b.onclick = () => { ta.value = b.dataset.s; ta.focus(); };
-  $('#cf').onsubmit = async (e) => {
-    e.preventDefault(); const t = ta.value.trim(); if (!t) return;
-    try { await api('/api/chat', { method: 'POST', body: { text: t } }); chat(); } catch (err) { toast(err.message); }
-  };
+    ${j.awaiting_reply ? `<div class="msg pm"><span class="avatar av-pm">${I('spark', 'sm')}</span><div class="bubble typing" title="PM is reading"><i></i><i></i><i></i></div></div>` : ''}
+    ${j.unanswered ? `<p class="small muted center">The PM handled this without a chat reply. Ask again if you need an answer.</p>` : ''}
+    ${!j.awaiting_reply ? `<div class="suggest">${['Where are we now?', 'What is blocked?', 'What happens next?'].map(s => `<button type="button" data-s="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}`;
+  for (const b of log.querySelectorAll('[data-s]')) b.onclick = () => { const ta = $('#ct'); ta.value = b.dataset.s; setDraft(ta.value); ta.focus(); };
+  if (scroll || nearBottom) window.scrollTo(0, document.body.scrollHeight);
   clearTimeout(chatTimer);
-  if (waiting || j.pm_state === 'thinking') chatTimer = setTimeout(() => route === 'chat' && chat(), 8000);
+  if (j.awaiting_reply) chatTimer = setTimeout(() => chatLog(false), 6000);
 }
 
 // ---------- DECISIONS ----------
@@ -374,18 +394,21 @@ async function fileDetail(id) {
   ${f.note ? `<div class="notebox">${I('info')}<span>${esc(f.note)}</span></div>` : ''}
   ${f.has_preview ? `<p class="small muted">Phone-sized copy. <a href="${src}?preview=0" style="color:var(--amber)">Full quality</a> · the original stays on the laptop.</p>` : ''}
   <form class="card mt" id="rf"><div class="row between"><b>Your verdict</b>${reviewed ? `<span class="tag green">${reviewed}</span>` : ''}</div>
-    <textarea name="comment" rows="2" class="mt" placeholder="Notes for the PM (timestamps help, e.g. 2:14 too fast)"></textarea>
+    <p class="small muted" style="margin:6px 0 0">Anything you write here is sent <b>together with</b> the button you tap. The PM passes it on to the creator.</p>
+    <textarea name="comment" rows="3" class="mt" placeholder="Optional notes, e.g. 2:14 too fast, swap the second shot"></textarea>
     <div class="verdicts">
       <button class="btn good" name="v" value="approved">${I('thumbup')}Approve</button>
       <button class="btn warn" name="v" value="changes_requested">${I('redo')}Changes</button>
       <button class="btn bad" name="v" value="rejected">${I('ban')}Reject</button>
     </div>
-    <button class="btn ghost full mt" name="v" value="">${I('chat', 'sm')} Comment only</button>
+    <button class="btn ghost full mt" name="v" value="">${I('chat', 'sm')} Send notes only (no verdict yet)</button>
   </form>`;
   $('#rf').onsubmit = async (e) => {
     e.preventDefault();
     const verdict = e.submitter ? e.submitter.value : '', comment = new FormData(e.target).get('comment') || '';
-    try { await api(`/api/files/${encodeURIComponent(id)}/review`, { method: 'POST', body: { verdict, comment } }); toast('Sent to the PM'); fileDetail(id); } catch (err) { toast(err.message); }
+    const what = { approved: 'Approved', changes_requested: 'Changes requested', rejected: 'Rejected', '': 'Notes' }[verdict] || 'Sent';
+    try { await api(`/api/files/${encodeURIComponent(id)}/review`, { method: 'POST', body: { verdict, comment } });
+      toast(`${what}${comment && verdict ? ' + your notes' : ''} sent: PM → creator`); fileDetail(id); } catch (err) { toast(err.message); }
   };
 }
 
@@ -433,11 +456,11 @@ async function render() {
   } catch (e) { if (e.message !== 'login') view.innerHTML = `<div class="empty">${I('alert')}<div>Couldn't reach the laptop: ${esc(e.message)}</div><button class="btn mt" onclick="location.reload()">Retry</button></div>`; }
 }
 window.addEventListener('hashchange', () => { window.scrollTo(0, 0); render(); });
-document.addEventListener('visibilitychange', () => { if (!document.hidden && route !== 'files' && route !== 'decisions') render(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) return; if (route === 'chat') chatLog(false).catch(() => {}); else if (route !== 'files' && route !== 'decisions') render(); });
 setInterval(() => { if (document.hidden) return; if (route === 'home') render(); else refreshState().catch(() => {}); }, 30000);
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
-  navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.type === 'push' && (route === 'home' || route === 'chat')) render(); });
+  navigator.serviceWorker.addEventListener('message', (e) => { if (!e.data || e.data.type !== 'push') return; if (route === 'chat') chatLog(false).catch(() => {}); else if (route === 'home') render(); });
 }
 render();
 })();

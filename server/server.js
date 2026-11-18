@@ -190,10 +190,18 @@ async function api(req, res, url) {
   if (p === '/api/state' && M === 'GET') return send(res, 200, state());
 
   if (p === '/api/chat' && M === 'GET') {
+    // Chat = only what the user typed in Ask PM and the PM's replies (not reviews or decision cards).
     const rows = d.prepare(`SELECT id,ts,sender,recipient,type,content,status,decision_id FROM messages
-      WHERE (sender='user' AND recipient='pm') OR (sender='pm' AND recipient='user') ORDER BY ts DESC LIMIT 100`).all().reverse();
+      WHERE (sender='user' AND recipient='pm' AND type='user_message')
+         OR (sender='pm' AND recipient='user' AND type NOT IN ('decision_request'))
+      ORDER BY ts DESC LIMIT 100`).all().reverse();
     d.prepare(`UPDATE messages SET status='read', acked_at=? WHERE sender='pm' AND recipient='user' AND status IN ('pending','delivered')`).run(B.now());
-    return send(res, 200, { messages: rows, pm_state: B.getStatus('pm_state') });
+    // "PM is replying" only while the user's latest message is still queued or being handled.
+    const lastUser = [...rows].reverse().find(r => r.sender === 'user');
+    const lastPm = [...rows].reverse().find(r => r.sender === 'pm');
+    const awaiting = !!lastUser && (!lastPm || lastPm.ts < lastUser.ts) && ['pending', 'processing'].includes(lastUser.status);
+    return send(res, 200, { messages: rows, pm_state: B.getStatus('pm_state'), awaiting_reply: awaiting,
+      unanswered: !!lastUser && (!lastPm || lastPm.ts < lastUser.ts) && !awaiting });
   }
   if (p === '/api/chat' && M === 'POST') {
     const body = await readBody(req);
