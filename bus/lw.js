@@ -50,10 +50,19 @@ function workerSend(opt, content) {
   if ((type === 'question' || type === 'decision_request') && !decision_id) {
     decision_id = B.newId('d');
     const att = [].concat(opt.attach || []).filter(a => a && a !== true).map(p => attachFile(p, 'worker'));
+    const toUser = !!opt['to-user'];   // user review points (e.g. thumbnail pick): straight to the phone, answer straight back
     B.db().prepare(`INSERT INTO decisions(id,ts,asked_by,asked_of,question,context,options,recommendation,status,task_id,importance,attachments,project,source)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(decision_id, B.now(), 'worker', 'pm', content, opt.context || null, JSON.stringify(splitOpts(opt.options)),
-        opt.recommend || null, 'open', opt.task || null, opt.importance || 'normal', att.length ? JSON.stringify(att) : null, B.currentProject(), 'bus');
+      .run(decision_id, B.now(), 'worker', toUser ? 'user' : 'pm', content, opt.context || null, JSON.stringify(splitOpts(opt.options)),
+        opt.recommend || null, 'open', opt.task || null, opt.importance || 'normal', att.length ? JSON.stringify(att) : null, B.currentProject(),
+        toUser ? 'worker-user' : 'bus');
+    if (toUser) {
+      queueNotification({ title: 'Your pick is needed', body: content, url: '/#/decisions/' + decision_id, priority: 'high', related: decision_id });
+      const m0 = B.addMessage({ sender: 'worker', recipient: 'pm', type: 'decision_request', status: 'noted', decision_id,
+        content: `(Asked the user directly) ${content}` });
+      if (type === 'question' || type === 'decision_request') B.setStatus('worker_state', 'waiting_for_decision');
+      return { id: m0.id, decision_id, sent_to: 'user', next: 'End your turn or continue independent work; the answer is delivered here automatically.' };
+    }
   }
   const m = B.addMessage({ sender: 'worker', recipient: 'pm', type, content, task_id: opt.task || null, decision_id, file_id,
     meta: opt.context ? { context: opt.context } : null });

@@ -84,7 +84,8 @@ At natural task boundaries (not in the middle of a running operation) report wit
 - send --type review --file "<path>" --title "<short title>" "<what the user should check>"   (copies the file for phone review; originals are untouched)
 - send --type error "<significant error and its impact>"
 - ask "<question>" --options "A|B|C" --context "<why>" --recommend "A" [--attach "<path>"]   then end your turn or continue independent work; the answer is delivered here automatically.
-  If the question is about a patch, draft or file, ALWAYS --attach it (patches render as a readable diff on the user's phone)
+  If the question is about a patch, draft or file, ALWAYS --attach it (patches render as a readable diff on the user's phone).
+  Add --to-user for the user's own review points (story proposal, script, preview, thumbnail pick): it goes straight to their phone
 - report-user-decision "<what the user decided>"   when the user answers you directly in this session
 - ack <message-id> --note "<what you will do>"   for every PM message you receive
 PM messages arrive automatically as context at safe checkpoints. Routine progress pings are not needed.`;

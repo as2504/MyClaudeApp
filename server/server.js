@@ -228,7 +228,7 @@ async function api(req, res, url) {
     const choice = String(body.choice || '').slice(0, 500), comment = String(body.comment || '').slice(0, 4000);
     if (!choice && !comment) return send(res, 400, { error: 'choose an option or write a comment' });
     const answer = `${choice || ''}${choice && comment ? '. ' : ''}${comment || ''}`;
-    if (dec.source === 'direct') {
+    if (dec.source === 'direct' || dec.source === 'worker-user') {
       // The worker asked this in its own session: answer goes straight to the worker (no PM run needed).
       d.prepare(`UPDATE decisions SET status='closed', answer=?, comment=?, answered_by='user (phone)', answered_at=? WHERE id=? AND status='open'`)
         .run(choice || null, comment || null, B.now(), dec.id);
