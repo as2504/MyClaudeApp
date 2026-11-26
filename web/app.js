@@ -381,7 +381,8 @@ async function fileDetail(id) {
   const f = await api('/api/files/' + encodeURIComponent(id));
   const src = `/api/files/${encodeURIComponent(id)}/raw`;
   let media = '';
-  if (f.kind === 'audio') media = `<div class="audio-card"><div class="wave">${Array.from({ length: 48 }, (_, i) => `<i style="height:${18 + Math.abs(Math.sin(i * 1.7) * 26 + Math.sin(i * .5) * 12)}px"></i>`).join('')}</div><audio class="media" style="padding:0" controls preload="metadata" src="${src}"></audio></div>`;
+  if (f.removed) media = `<div class="notebox">${I('info')}<span>The phone copy was removed in a clean-up. The original is still on the laptop: ${esc(f.original_path)}</span></div>`;
+  else if (f.kind === 'audio') media = `<div class="audio-card"><div class="wave">${Array.from({ length: 48 }, (_, i) => `<i style="height:${18 + Math.abs(Math.sin(i * 1.7) * 26 + Math.sin(i * .5) * 12)}px"></i>`).join('')}</div><audio class="media" style="padding:0" controls preload="metadata" src="${src}"></audio></div>`;
   else if (f.kind === 'video') media = `<div class="media-wrap"><video class="media" controls playsinline preload="metadata" src="${src}"></video></div>`;
   else if (f.kind === 'image') media = `<div class="media-wrap"><img class="media" style="object-fit:contain" src="${src}" alt=""></div>`;
   else if (f.kind === 'text' || f.kind === 'diff') media = attachmentView(f, true);

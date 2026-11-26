@@ -103,6 +103,7 @@ function fileView(id, withText) {
   const out = { id: f.id, ts: f.ts, title: f.title, note: f.note, kind: f.kind, mime: f.mime, size: f.size, status: f.status,
     review_comment: f.review_comment, reviewed_at: f.reviewed_at, has_preview: !!f.preview_name, original_name: path.basename(f.original_path),
     original_path: f.original_path.replace(/^.*?\\Cinema\\/i, 'Cinema\\') };
+  if (f.stored_name === '__removed__') { out.removed = true; return out; }   // copy deleted in a clean-up; original stays in LorewoodFilms
   if (withText && (f.kind === 'text' || f.kind === 'diff')) {
     const abs = safeJoin(cfg.FILES_DIR, f.stored_name);
     const buf = Buffer.alloc(Math.min(f.size, 400 * 1024));
